@@ -198,10 +198,16 @@ public class DownloadThread extends Thread {
                 client = null;
             }
             cleanupDestination(state, finalStatus);
-            notifyDownloadCompleted(finalStatus, state.mCountRetry, state.mRetryAfter,
-                                    state.mGotData, state.mFilename,
-                                    state.mNewUri, state.mMimeType);
-            mInfo.mHasActiveThread = false;
+            // We have written new information to the database, the data in the update thread
+            // is no longer valid. This needs to be synchronized to prevent the information
+            // to change while the Update Thread in Download Service is using it.
+            synchronized (mSystemFacade) {
+                notifyDownloadCompleted(finalStatus, state.mCountRetry, state.mRetryAfter,
+                        state.mGotData, state.mFilename,
+                        state.mNewUri, state.mMimeType);
+                mInfo.mHasActiveThread = false;
+                mSystemFacade.setUpdateThreadDataIsOutdated(true);
+            }
         }
     }
 

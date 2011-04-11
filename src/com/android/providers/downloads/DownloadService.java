@@ -287,16 +287,24 @@ public class DownloadService extends Service {
                     mPendingUpdate = false;
                 }
 
+                boolean downloadUpdateFromDatabaseAborted = false;
                 long now = mSystemFacade.currentTimeMillis();
                 boolean mustScan = false;
                 keepService = false;
                 wakeUp = Long.MAX_VALUE;
                 Set<Long> idsNoLongerInDatabase = new HashSet<Long>(mDownloads.keySet());
 
-                Cursor cursor = getContentResolver().query(Downloads.Impl.ALL_DOWNLOADS_CONTENT_URI,
-                        null, null, null, null);
-                if (cursor == null) {
-                    continue;
+                Cursor cursor = null;
+                // This section is synchronized to prevent the DownloadThread
+                // to change the SystemFacade variable while we are
+                // updating the data.
+                synchronized (mSystemFacade) {
+                    cursor = getContentResolver().query(Downloads.Impl.ALL_DOWNLOADS_CONTENT_URI,
+                            null, null, null, null);
+                    if (cursor == null) {
+                        continue;
+                    }
+                    mSystemFacade.setUpdateThreadDataIsOutdated(false);
                 }
                 try {
                     DownloadInfo.Reader reader =
@@ -304,82 +312,99 @@ public class DownloadService extends Service {
                     int idColumn = cursor.getColumnIndexOrThrow(Downloads.Impl._ID);
 
                     for (cursor.moveToFirst(); !cursor.isAfterLast(); cursor.moveToNext()) {
-                        long id = cursor.getLong(idColumn);
-                        idsNoLongerInDatabase.remove(id);
-                        DownloadInfo info = mDownloads.get(id);
-                        if (info != null) {
-                            updateDownload(reader, info, now);
-                        } else {
-                            info = insertDownload(reader, now);
-                        }
+                        // This section needs to be synchorized to prevent the DownloadThread
+                        // to change the data while we are using it.
+                        // If the DownloadThread has a pending change and the data is old
+                        // we will do the same thing we did last time.
+                        synchronized (mSystemFacade) {
+                            // The data we have read is no longer valid we need to abort
+                            // and start over to prevent using data with the wrong values.
+                            if (mSystemFacade.isUpdateThreadDataOutdated()) {
+                                mPendingUpdate = true;
+                                downloadUpdateFromDatabaseAborted = true;
+                                break;
+                            }
+                            long id = cursor.getLong(idColumn);
+                            idsNoLongerInDatabase.remove(id);
+                            DownloadInfo info = mDownloads.get(id);
+                            if (info != null) {
+                                updateDownload(reader, info, now);
+                            } else {
+                                info = insertDownload(reader, now);
+                            }
 
-                        if (info.shouldScanFile() && !scanFile(info, true, false)) {
-                            mustScan = true;
-                            keepService = true;
-                        }
-                        if (info.hasCompletionNotification()) {
-                            keepService = true;
-                        }
-                        long next = info.nextAction(now);
-                        if (next == 0) {
-                            keepService = true;
-                        } else if (next > 0 && next < wakeUp) {
-                            wakeUp = next;
+                            if (info.shouldScanFile() && !scanFile(info, true, false)) {
+                                mustScan = true;
+                                keepService = true;
+                            }
+                            if (info.hasCompletionNotification()) {
+                                keepService = true;
+                            }
+                            long next = info.nextAction(now);
+                            if (next == 0) {
+                                keepService = true;
+                            } else if (next > 0 && next < wakeUp) {
+                                wakeUp = next;
+                            }
                         }
                     }
                 } finally {
                     cursor.close();
                 }
 
-                for (Long id : idsNoLongerInDatabase) {
-                    deleteDownload(id);
-                }
+                if (!downloadUpdateFromDatabaseAborted) {
+                    for (Long id : idsNoLongerInDatabase) {
+                        deleteDownload(id);
+                    }
 
-                // is there a need to start the DownloadService? yes, if there are rows to be
-                // deleted.
-                if (!mustScan) {
-                    for (DownloadInfo info : mDownloads.values()) {
-                        if (info.mDeleted && TextUtils.isEmpty(info.mMediaProviderUri)) {
-                            mustScan = true;
-                            keepService = true;
-                            break;
+                    // is there a need to start the DownloadService? yes, if there are rows to be
+                    // deleted.
+                    if (!mustScan) {
+                        for (DownloadInfo info : mDownloads.values()) {
+                            if (info.mDeleted && TextUtils.isEmpty(info.mMediaProviderUri)) {
+                                mustScan = true;
+                                keepService = true;
+                                break;
+                            }
                         }
                     }
-                }
-                mNotifier.updateNotification(mDownloads.values());
-                if (mustScan) {
-                    bindMediaScanner();
-                } else {
-                    mMediaScannerConnection.disconnectMediaScanner();
-                }
+                    mNotifier.updateNotification(mDownloads.values());
+                    if (mustScan) {
+                        bindMediaScanner();
+                    } else {
+                        mMediaScannerConnection.disconnectMediaScanner();
+                    }
 
-                // look for all rows with deleted flag set and delete the rows from the database
-                // permanently
-                for (DownloadInfo info : mDownloads.values()) {
-                    if (info.mDeleted) {
-                        // this row is to be deleted from the database. but does it have
-                        // mediaProviderUri?
-                        if (TextUtils.isEmpty(info.mMediaProviderUri)) {
-                            if (info.shouldScanFile()) {
-                                // initiate rescan of the file to - which will populate
-                                // mediaProviderUri column in this row
-                                if (!scanFile(info, false, true)) {
-                                    throw new IllegalStateException("scanFile failed!");
+                    // look for all rows with deleted flag set and delete the rows from the database
+                    // permanently
+                    for (DownloadInfo info : mDownloads.values()) {
+                        if (info.mDeleted) {
+                            // this row is to be deleted from the database. but does it have
+                            // mediaProviderUri?
+                            if (TextUtils.isEmpty(info.mMediaProviderUri)) {
+                                if (info.shouldScanFile()) {
+                                    // initiate rescan of the file to - which will populate
+                                    // mediaProviderUri column in this row
+                                    if (!scanFile(info, false, true)) {
+                                        throw new IllegalStateException("scanFile failed!");
+                                    }
+                                } else {
+                                    // this file should NOT be scanned. delete the file.
+                                    Helpers.deleteFile(getContentResolver(), info.mId,
+                                            info.mFileName, info.mMimeType);
                                 }
                             } else {
-                                // this file should NOT be scanned. delete the file.
+                                // yes it has mediaProviderUri column already filled in.
+                                // delete it from MediaProvider database and then from downloads
+                                // table in DownProvider database (the order of deletion is
+                                // important).
+                                getContentResolver().delete(Uri.parse(info.mMediaProviderUri), null,
+                                        null);
+                                // the following deletes the file and then deletes it from
+                                // downloads db.
                                 Helpers.deleteFile(getContentResolver(), info.mId, info.mFileName,
                                         info.mMimeType);
                             }
-                        } else {
-                            // yes it has mediaProviderUri column already filled in.
-                            // delete it from MediaProvider database and then from downloads table
-                            // in DownProvider database (the order of deletion is important).
-                            getContentResolver().delete(Uri.parse(info.mMediaProviderUri), null,
-                                    null);
-                            // the following deletes the file and then deletes it from downloads db
-                            Helpers.deleteFile(getContentResolver(), info.mId, info.mFileName,
-                                    info.mMimeType);
                         }
                     }
                 }

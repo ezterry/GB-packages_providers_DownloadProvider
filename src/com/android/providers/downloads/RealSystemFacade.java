@@ -15,6 +15,7 @@ import android.util.Log;
 class RealSystemFacade implements SystemFacade {
     private Context mContext;
     private NotificationManager mNotificationManager;
+    private boolean mUpdateThreadDataIsOutdated;
 
     public RealSystemFacade(Context context) {
         mContext = context;
@@ -113,5 +114,13 @@ class RealSystemFacade implements SystemFacade {
     @Override
     public void startThread(Thread thread) {
         thread.start();
+    }
+
+    public boolean isUpdateThreadDataOutdated() {
+        return mUpdateThreadDataIsOutdated;
+    }
+
+    public void setUpdateThreadDataIsOutdated(boolean dataIsOutdated) {
+        mUpdateThreadDataIsOutdated = dataIsOutdated;
     }
 }

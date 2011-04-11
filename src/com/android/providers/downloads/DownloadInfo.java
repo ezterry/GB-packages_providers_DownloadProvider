@@ -471,8 +471,12 @@ public class DownloadInfo {
             mContext.getContentResolver().update(getAllDownloadsUri(), values, null, null);
         }
         DownloadThread downloader = new DownloadThread(mContext, mSystemFacade, this);
-        mHasActiveThread = true;
-        mSystemFacade.startThread(downloader);
+        // This needs to be synchronized with the Update thread to keep the system from
+        // gettings out of sync.
+        synchronized (mSystemFacade) {
+            mHasActiveThread = true;
+            mSystemFacade.startThread(downloader);
+        }
     }
 
     public boolean isOnCache() {

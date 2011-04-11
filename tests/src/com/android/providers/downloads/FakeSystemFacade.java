@@ -91,4 +91,11 @@ public class FakeSystemFacade implements SystemFacade {
             mStartedThreads.poll().run();
         }
     }
+
+    public boolean isUpdateThreadDataOutdated() {
+        return false;
+    }
+
+    public void setUpdateThreadDataIsOutdated(boolean dataIsOutdated) {
+    }
 }

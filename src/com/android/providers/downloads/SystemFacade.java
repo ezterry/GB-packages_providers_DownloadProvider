@@ -1,4 +1,3 @@
-
 package com.android.providers.downloads;
 
 import android.app.Notification;
@@ -65,4 +64,14 @@ interface SystemFacade {
      * Start a thread.
      */
     public void startThread(Thread thread);
+
+    /**
+     * @return true if the data read from the database in update thread is no longer up to date.
+     */
+    public boolean isUpdateThreadDataOutdated();
+
+    /**
+     * @param dataIsOutdated If the data read from the database in the update thread is outdated.
+     */
+    public void setUpdateThreadDataIsOutdated(boolean dataIsOutdated);
 }
